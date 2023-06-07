@@ -1,0 +1,191 @@
+#### Problem 1
+
+WITH UniquePlacementsInJuly AS (
+    SELECT DISTINCT Placement, CONVERT(date, [Flight Start], 103) AS [Start], CONVERT(date, [Flight End], 103) AS [End]
+    FROM dbo.Placements
+    WHERE 
+    	(MONTH(CONVERT(date, [Flight Start], 103)) = 7 OR MONTH(CONVERT(date, [Flight End], 103)) = 7))
+, DatesInJuly AS (
+    SELECT DATEFROMPARTS(2017, 7, 1) AS [Date]
+    UNION ALL
+    SELECT DATEADD(day, 1, [Date])
+    FROM DatesInJuly
+    WHERE [Date] < DATEFROMPARTS(2017, 7, 31)
+)
+SELECT [Date], COUNT(*)
+FROM DatesInJuly
+JOIN UniquePlacementsInJuly
+    ON [Date] BETWEEN COALESCE([Start], '2017-07-01') AND COALESCE([End], '2017-07-31')
+GROUP BY [Date]
+ORDER BY [Date];
+
+
+#### Problem 2
+
+Parsing the Placement Name into individual components was a struggle because:
+- PARSENAME splits a string into four (4) components, maximum - Placement Name had seventeen (17) components
+- STRING_SPLIT returns a single-column table whose rows are substrings -- not what we want.
+Therefore, I had to create my own function in order to parse the Placement Name string.
+It is a separate table because I could not display the parsed columns AND use GROUP BY in
+the same query. It resulted in an error.
+
+
+USE [test]
+GO
+
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE FUNCTION [dbo].splitString(
+    @p_csv_string varchar(5000)
+)
+RETURNS @tblSplitData TABLE (
+    split_values varchar(5000)
+)
+AS 
+BEGIN
+    WHILE len(@p_csv_string) > 0
+    BEGIN   
+        DECLARE @split_value varchar(5000);
+        DECLARE @first_comma_index int = CHARINDEX(',', @p_csv_string);
+        -- if a comma exists in the csv string, then ...
+        IF @first_comma_index > 0
+        BEGIN
+            -- extract the single left most value from the csv string and use that as the split value
+            SET @split_value = LEFT(@p_csv_string, @first_comma_index - 1);
+            -- extract the rest of the csv string leaving out the split value
+            SET @p_csv_string = STUFF(@p_csv_string, 1, @first_comma_index, '');
+        END
+        ELSE
+        BEGIN
+            -- use the entire string as the split value
+            SET @split_value = @p_csv_string;
+            -- set the original csv string as blank
+            SET @p_csv_string = '';
+        END
+        -- insert the split value into the return table.
+        INSERT INTO @tblSplitData VALUES( @split_value );
+    END
+    RETURN;
+END
+GO
+
+------------------------------------------
+
+With PLC_CTE AS 
+(SELECT a.placement_id, b.split_values AS Value,
+ROW_NUMBER()OVER (PARTITION by a.placement_id ORDER by a.placement_id) As RowNum
+FROM Orders a 
+CROSS APPLY splitString(Replace(a.placement_name,'_',',')) b)
+
+SELECT Placement_id,
+[1] AS Site,
+[2] AS Initiative,
+[3] AS Promotion,
+[4] AS SiteType,
+[5] AS Device,
+[6] AS AdFormat,
+[7] AS AdType,
+[8] AS VideoLength,
+[9] AS Creative,
+[10] AS Version,
+[11] AS VideoFormat,	
+[12] AS PromoBucket,
+[13] AS Geo,
+[14] AS Demo,
+[15] AS Interest,	
+[16] AS FlightStart,	
+[17] AS FlightEnd
+FROM PLC_CTE
+PIVOT 
+(Max (Value) FOR RowNum  in ([1], [2],[3],[4],[5],[6],[7],[8],[9],[10],[11],[12],[13],[14],[15],
+[16],[17])) AS PVT
+
+------------------------------------------
+
+SELECT 
+	i.Date,
+	p.Site,
+	p.Promotion,
+	SUM(i.impressions) AS Impressions,
+	SUM(i.clicks) AS Clicks,
+	CAST(SUM(i.clicks) AS FLOAT) / CAST(SUM(i.impressions) AS FLOAT) AS ClickThroughRate,
+	SUM(i.spend) AS Spend,
+	SUM(o.viewthrough_orders) AS ViewThroughOrders,
+	SUM(o.clickthrough_orders) AS ClickThroughOrders,
+	COUNT(o.ord) AS TotalOrders,
+	SUM(o.clickthrough_revenue) + SUM(CAST(REPLACE(o.viewthrough_revenue, ',', '.') AS DECIMAL(10,2))) AS TotalRevenue ,
+	(SUM(o.clickthrough_revenue) + SUM(CAST(REPLACE(o.viewthrough_revenue, ',', '.') AS DECIMAL(10,2)))) / NUllif (SUM(i.spend), 0) AS ReturnOnAdSpend,
+	SUM(i.spend) / COUNT(o.ord) AS AdSpendPerOrder
+FROM Impressions i 
+JOIN Orders o  
+ON o.placement_id = i.placement_id
+JOIN Placements p 
+ON p.Placement = i.placement_name
+GROUP BY i.Date, p.Site, p.Promotion
+
+
+#### Problem 3
+
+SELECT 
+	p.Site,
+	p.Promotion,
+	SUM(i.spend) AS Spend,
+	SUM(o.viewthrough_orders) AS TotalViewThrough,
+	SUM(o.clickthrough_orders) AS ClickThroughOrders
+FROM Impressions i 
+JOIN Orders o  
+ON o.placement_id = i.placement_id
+JOIN Placements p 
+ON p.Placement = i.placement_name
+GROUP BY p.Site, p.Promotion
+HAVING SUM(i.spend) > 1000
+ORDER BY SUM(o.clickthrough_orders) / COUNT(o.ord);
+
+
+#### Problem 4
+
+Attributes that define a successful placement would vary depending 
+on the objective of the placement. For example, we would evaluate the 
+success of a "Conversion" placement differently that we would
+a "Post Engagement" placement.
+
+The most successful placement name optimizes the combination of 
+a reasonable spend rate and a relative high return on investment across various attributes.
+
+From my analysis and in my opinion, the following placement name 
+was the most successful: 
+
+FB_Spring Training_Spring Training_Newsfeed_Desktop_Sponsored_Carousel_()_Run+Catch+Hit+Park_1_()_General Ticketing_IL_()_Fans_1/7/2017_2/17/2017
+
+The above placement name scored extremely high (when compared to its counterparts) across three categories
+- Revenue Generated
+- Unique Clicks
+- Consumer Reach + Engagement
+
+Moreover, given the distribution of the amount spent on various placements, the amount spent
+on the aforementioned placement sits in between the 1st quartile and the 
+median.
+
+All of this proves this there was a successful return of investment given the amount spent.
+
+
+#### Problem 5
+
+Click Through Rate (CTR) is the number of clicks an ad receives divided 
+by the number of times the ad is shown: clicks ÷ impressions = CTR
+
+We may obtain the clicks and impressions from the Impressions table.
+
+
+SELECT
+	billing_zip,
+	CAST(SUM(clicks) AS FLOAT) / CAST(SUM(impressions) AS FLOAT) AS ClickThroughRate
+FROM Impressions
+JOIN Orders
+ON Orders.placement_id = Impressions.placement_id
+GROUP BY billing_zip
+ORDER BY ClickThroughRate DESC
